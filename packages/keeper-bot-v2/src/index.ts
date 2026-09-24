@@ -43,5 +43,11 @@ export {
   verifyNoSecretsInOutput,
 } from './inspect.js';
 
+// Task source abstraction — issue #0262
+// Candidate discovery: IndexerTaskSource (WS feed) or RpcTaskSource (getEvents scanning).
+// Source is selected by createTaskSource() based on config.
+export type { CandidateTask, TaskSource, WebSocketFactory } from './task_source.js';
+export { createTaskSource, IndexerTaskSource, RpcTaskSource } from './task_source.js';
+
 // Version
 export const VERSION = '0.2.0';

@@ -78,6 +78,14 @@ export interface BotConfig {
   // Persistence
   stateDbPath: string; // Path to SQLite database for persistent state
 
+  // Indexer integration (optional — both must be set to enable indexer mode)
+  // When configured, candidate tasks are discovered via the indexer WebSocket
+  // feed instead of direct RPC getEvents scanning. The authoritative on-chain
+  // is_claimable check is still performed before every claim regardless of
+  // which source is active.
+  indexerWsUrl: string | null; // WebSocket endpoint, e.g. ws://indexer:8080/v1/ws
+  indexerRestUrl: string | null; // REST base URL, e.g. http://indexer:8080/v1
+
   // Development
   simulateExecution: boolean; // Use simulated execution (dev only, never production)
 }
@@ -172,6 +180,28 @@ export function loadConfig(): BotConfig {
     stateDbPath: requireEnv('STATE_DB_PATH', {
       fallback: './keeper-state.db',
     }) as string,
+
+    // Indexer endpoints are optional. Both must be set for indexer mode to
+    // engage; a partial configuration is treated as "not configured" and falls
+    // back to direct RPC scanning so a misconfigured env does not silently
+    // disable task discovery.
+    indexerWsUrl: requireEnv('INDEXER_WS_URL', {
+      validate: {
+        fn: (v): v is string =>
+          typeof v === 'string' && (v.startsWith('ws://') || v.startsWith('wss://')),
+        reason: 'must start with ws:// or wss://',
+      },
+      fallback: null,
+    }) as string | null,
+
+    indexerRestUrl: requireEnv('INDEXER_REST_URL', {
+      validate: {
+        fn: (v): v is string =>
+          typeof v === 'string' && (v.startsWith('http://') || v.startsWith('https://')),
+        reason: 'must start with http:// or https://',
+      },
+      fallback: null,
+    }) as string | null,
 
     simulateExecution: requireEnv('SIMULATE_EXECUTION', {
       parse: (v) => v.toLowerCase() === 'true',
