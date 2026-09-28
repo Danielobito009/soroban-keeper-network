@@ -1,3 +1,10 @@
+const tsParser = require("@typescript-eslint/parser");
+const tsPlugin = require("@typescript-eslint/eslint-plugin");
+
+// Keeper bot v2 follows the same minimal lint philosophy as the main SDK:
+// a small, non-negotiable ruleset focused on correctness and clarity,
+// not extensive style enforcement.
+module.exports = [
 import js from "@eslint/js";
 import tsParser from "@typescript-eslint/parser";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
@@ -31,6 +38,9 @@ export default [
       "@typescript-eslint": tsPlugin,
     },
     rules: {
+      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/explicit-function-return-type": "warn",
       "no-unused-vars": "off",
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
       "no-console": "off",
