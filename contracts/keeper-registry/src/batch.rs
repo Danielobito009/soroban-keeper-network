@@ -107,6 +107,7 @@ impl KeeperRegistry {
                 // verifier to a batch-registered task is backlog issue 0102,
                 // separate from this batch-registration slice.
                 verifier: None,
+                condition: None,
             };
             save_task(&e, task_id, &task);
             emit_task_registered(&e, task_id, &owner, params.reward, params.deadline);
