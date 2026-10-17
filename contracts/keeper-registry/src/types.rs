@@ -146,10 +146,10 @@ pub struct Task {
     /// are permissionless, like keepers (design doc §5).
     pub verifier: Option<Address>,
     /// Optional on-chain condition predicate attached at registration
-    /// (`docs/TASK_CONDITIONS_DESIGN.md`). `None` means `claim_task` has no
-    /// condition check — the task is claimable based on status and lock window
-    /// alone (the unchanged path). `Some(addr)` means `claim_task` calls
-    /// `addr`'s condition check before allowing a claim, rejecting with
+    /// (`docs/TASK_CONDITIONS_DESIGN.md`). `None` means the task has no
+    /// condition check — execution proceeds based on status and lock window
+    /// alone (the unchanged path). `Some(addr)` means both `claim_task` and
+    /// `execute_task` check the condition before proceeding, rejecting with
     /// `KeeperError::ConditionFailed` if it returns `false` or panics.
     /// Any address is permitted — conditions are permissionless, like keepers
     /// (design doc §5).
@@ -185,6 +185,8 @@ pub struct BatchTaskParams {
     pub deadline: u64,
     pub ttl_ledgers: u32,
     pub lock_ledgers: u32,
+    pub verifier: Option<Address>,
+    pub condition: Option<Address>,
 }
 
 // ─── E06 — Staking & Slashing ───────────────────────────────────────────
