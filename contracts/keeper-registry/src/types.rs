@@ -145,6 +145,12 @@ pub struct Task {
     /// if it returns `false` or panics. Any address is permitted — verifiers
     /// are permissionless, like keepers (design doc §5).
     pub verifier: Option<Address>,
+    /// Optional on-chain conditional executor attached at registration.
+    /// `None` means `execute_task` runs unconditionally (the wave-1 MVP path,
+    /// unchanged). `Some(addr)` means `execute_task` calls `addr`'s condition
+    /// check before execution, rejecting if it returns `false` or panics. Any
+    /// address is permitted — conditions are permissionless, like keepers.
+    pub condition: Option<Address>,
 }
 
 // ─── E05 — Batch Operations & Gas ──────────────────────────────────────
@@ -161,6 +167,8 @@ pub struct BatchTaskParams {
     pub deadline: u64,
     pub ttl_ledgers: u32,
     pub lock_ledgers: u32,
+    pub verifier: Option<Address>,
+    pub condition: Option<Address>,
 }
 
 // ─── E06 — Staking & Slashing ───────────────────────────────────────────
