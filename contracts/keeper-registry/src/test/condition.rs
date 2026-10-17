@@ -1,13 +1,30 @@
 //! Task-condition registration and claim gating.
 
 use soroban_sdk::{
-    contract, contractimpl,
+    contract, contractimpl, contracttype,
     testutils::{Address as _, Ledger},
+    xdr::{FromXdr, ToXdr},
     Address, Bytes, Env,
 };
 
 use super::common::*;
-use crate::{KeeperError, TaskStatus, TaskType};
+use crate::{KeeperError, Task, TaskStatus, TaskType};
+
+#[contracttype]
+#[derive(Clone)]
+struct TaskBeforeConditions {
+    owner: Address,
+    task_type: TaskType,
+    calldata: Bytes,
+    reward: i128,
+    deadline: u64,
+    ttl_ledgers: u32,
+    status: TaskStatus,
+    claimer: Option<Address>,
+    claim_ledger: Option<u32>,
+    lock_ledgers: u32,
+    verifier: Option<Address>,
+}
 
 #[contract]
 struct TestCondition;
@@ -40,6 +57,28 @@ fn register_with_condition(s: &TestSetup, condition: Address) -> u64 {
         &None,
         &Some(condition),
     )
+}
+
+#[test]
+#[should_panic(expected = "UnexpectedSize")]
+fn pre_condition_task_encoding_requires_explicit_migration() {
+    let env = Env::default();
+    let legacy = TaskBeforeConditions {
+        owner: Address::generate(&env),
+        task_type: TaskType::Liquidation,
+        calldata: Bytes::from_slice(&env, b"legacy"),
+        reward: 1,
+        deadline: 2,
+        ttl_ledgers: 3,
+        status: TaskStatus::Pending,
+        claimer: None,
+        claim_ledger: None,
+        lock_ledgers: 4,
+        verifier: None,
+    };
+
+    let encoded = legacy.to_xdr(&env);
+    let _ = Task::from_xdr(&env, &encoded);
 }
 
 #[test]
