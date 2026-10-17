@@ -1,0 +1,15 @@
+[package]
+name = "soroban-governance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = { version = "20.0", features = ["contract"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
