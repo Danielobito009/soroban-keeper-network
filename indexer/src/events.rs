@@ -36,6 +36,7 @@ pub enum EventType {
     Initialized,
     Upgraded,
     ReputationUpdated,
+    OraclePriceConditionSet,
 }
 
 impl EventType {
@@ -62,6 +63,7 @@ impl EventType {
             Self::Initialized => ("init", "admin"),
             Self::Upgraded => ("upgrade", "admin"),
             Self::ReputationUpdated => ("update", "reputation"),
+            Self::OraclePriceConditionSet => ("oracond", "task"),
         }
     }
 
@@ -88,6 +90,7 @@ impl EventType {
             EventType::Initialized,
             EventType::Upgraded,
             EventType::ReputationUpdated,
+            EventType::OraclePriceConditionSet,
         ];
         ALL.into_iter().find(|e| e.topics() == (verb, noun))
     }
@@ -112,6 +115,7 @@ impl EventType {
             Self::Initialized => "initialized",
             Self::Upgraded => "upgraded",
             Self::ReputationUpdated => "reputation_updated",
+            Self::OraclePriceConditionSet => "oracle_price_condition_set",
         }
     }
 
@@ -135,6 +139,7 @@ impl EventType {
             EventType::Initialized,
             EventType::Upgraded,
             EventType::ReputationUpdated,
+            EventType::OraclePriceConditionSet,
         ];
         ALL.into_iter().find(|e| e.as_str() == s)
     }
@@ -236,6 +241,13 @@ pub enum EventPayload {
         #[schema(value_type = String)]
         score: I128,
     },
+    OraclePriceConditionSet {
+        task_id: u64,
+        oracle: String,
+        asset: String,
+        #[schema(value_type = String)]
+        threshold: I128,
+    },
 }
 
 impl EventPayload {
@@ -259,6 +271,7 @@ impl EventPayload {
             Self::Initialized { .. } => EventType::Initialized,
             Self::Upgraded { .. } => EventType::Upgraded,
             Self::ReputationUpdated { .. } => EventType::ReputationUpdated,
+            Self::OraclePriceConditionSet { .. } => EventType::OraclePriceConditionSet,
         }
     }
 
@@ -272,7 +285,8 @@ impl EventPayload {
             | Self::TaskExpired { task_id }
             | Self::TaskCancelled { task_id, .. }
             | Self::RewardIncreased { task_id, .. }
-            | Self::DeadlineExtended { task_id, .. } => Some(*task_id),
+            | Self::DeadlineExtended { task_id, .. }
+            | Self::OraclePriceConditionSet { task_id, .. } => Some(*task_id),
             _ => None,
         }
     }
@@ -403,6 +417,7 @@ mod tests {
             "initialized",
             "upgraded",
             "reputation_updated",
+            "oracle_price_condition_set",
         ] {
             let ty = EventType::parse(name).expect("known event name");
             let (verb, noun) = ty.topics();

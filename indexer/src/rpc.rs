@@ -35,6 +35,8 @@ pub enum RawValue {
     Address(String),
     /// Hex-encoded bytes.
     Bytes(String),
+    /// Soroban Symbol (stored as a string).
+    Symbol(String),
 }
 
 /// One event as the RPC returns it, before typed parsing.
@@ -207,6 +209,7 @@ fn decode_scval(val: ScVal) -> Result<RawValue> {
         ScVal::Bool(v) => Ok(RawValue::Bool(v)),
         ScVal::Address(addr) => Ok(RawValue::Address(decode_address(&addr))),
         ScVal::Bytes(b) => Ok(RawValue::Bytes(hex::encode(b.0.to_vec()))),
+        ScVal::Symbol(sym) => Ok(RawValue::Symbol(decode_symbol(&sym.0))),
         other => Err(anyhow!(
             "unexpected value shape in event payload: {other:?}"
         )),
