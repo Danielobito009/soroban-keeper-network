@@ -1,0 +1,9 @@
+# Config for actionlint (run by the `actionlint` job in pr-hygiene.yml).
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      # Several steps write markdown to $GITHUB_STEP_SUMMARY, and the literal
+      # backticks live inside single quotes on purpose (`code` in the summary,
+      # not command substitution). shellcheck reports that as an info-level
+      # SC2016 every time; it is noise here, so it is the only rule ignored.
+      - 'shellcheck reported issue in this script: SC2016:.+'

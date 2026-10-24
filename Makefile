@@ -7,13 +7,7 @@
 
 WASM := target/wasm32-unknown-unknown/release/keeper_registry.wasm
 
-# Where the indexer's database-backed tests look for a Postgres. Unset by
-# default: without it those tests skip themselves, so `make ci` stays green on
-# a machine with no database. Override to run them for real, e.g.
-#   make indexer INDEXER_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/indexer_test
-INDEXER_TEST_DATABASE_URL ?=
-
-.PHONY: help build test fmt fmt-check lint wasm optimize clean bot bot-test bot-v2-test sdk-ts sdk-ts-lint indexer rust-sdk indexer-client ci check
+.PHONY: help build test fmt fmt-check lint wasm optimize clean bot bot-test bot-v2-test sdk-ts sdk-ts-lint cli indexer rust-sdk indexer-client ci check
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -37,6 +31,7 @@ lint: ## Run clippy with warnings denied (stricter than CI)
 wasm: ## Build the release WASM contracts (matches CI)
 	cargo build --locked --release --target wasm32-unknown-unknown --package keeper-registry
 	cargo build --locked --release --target wasm32-unknown-unknown --package keeper-treasury
+	cargo build --locked --release --target wasm32-unknown-unknown --package time-window-condition
 
 optimize: wasm ## Build and optimize the WASM for deployment
 	stellar contract optimize --wasm $(WASM)
@@ -47,14 +42,16 @@ bot: ## Run the example keeper bot
 indexer: ## Format-check, build and test the indexer (matches CI)
 	cargo fmt --package keeper-indexer -- --check
 	cargo build --package keeper-indexer --locked
-	INDEXER_TEST_DATABASE_URL=$(INDEXER_TEST_DATABASE_URL) \
-		cargo test --package keeper-indexer --locked
+	cargo test --package keeper-indexer --locked
 
 sdk-ts: ## Typecheck, build and test the TypeScript SDK (matches the required CI job)
 	cd packages/sdk-ts && npm ci --no-audit --no-fund && npx tsc --noEmit -p tsconfig.json && npm run build && npm test
 
 sdk-ts-lint: ## ESLint the TypeScript SDK (advisory in CI, so not part of `make ci`)
 	cd packages/sdk-ts && npm ci --no-audit --no-fund && npm run lint
+
+cli: sdk-ts ## Build and test the skn CLI (needs the SDK build)
+	cd packages/cli && npm install --no-audit --no-fund && npm run build && npm test
 
 bot-test: sdk-ts ## Build the SDK then run the keeper bot's tests (matches CI) — bot depends on sdk-ts's dist/ output
 	cd examples/keeper-bot && npm ci --no-audit --no-fund && npm test && npm run lint

@@ -1,4 +1,4 @@
-//! The fifteen registry events, as the indexer models them.
+//! Registry events as the indexer models them.
 //!
 //! Every variant here mirrors one `emit_*` in
 //! `contracts/keeper-registry/src/events.rs` exactly: the same topic pair and
@@ -20,6 +20,7 @@ use utoipa::ToSchema;
 #[serde(rename_all = "snake_case")]
 pub enum EventType {
     TaskRegistered,
+    ConditionNotMet,
     TaskClaimed,
     TaskExecuted,
     TaskExpired,
@@ -35,6 +36,7 @@ pub enum EventType {
     Initialized,
     Upgraded,
     ReputationUpdated,
+    OraclePriceConditionSet,
 }
 
 impl EventType {
@@ -45,6 +47,7 @@ impl EventType {
     pub const fn topics(self) -> (&'static str, &'static str) {
         match self {
             Self::TaskRegistered => ("reg", "task"),
+            Self::ConditionNotMet => ("condfail", "task"),
             Self::TaskClaimed => ("claim", "task"),
             Self::TaskExecuted => ("exec", "task"),
             Self::TaskExpired => ("exp", "task"),
@@ -60,6 +63,7 @@ impl EventType {
             Self::Initialized => ("init", "admin"),
             Self::Upgraded => ("upgrade", "admin"),
             Self::ReputationUpdated => ("update", "reputation"),
+            Self::OraclePriceConditionSet => ("oracond", "task"),
         }
     }
 
@@ -68,8 +72,9 @@ impl EventType {
     /// Returns `None` for a topic pair the contract does not emit, so an
     /// unrecognised event is skipped rather than mis-parsed as a known one.
     pub fn from_topics(verb: &str, noun: &str) -> Option<Self> {
-        const ALL: [EventType; 16] = [
+        const ALL: [EventType; 17] = [
             EventType::TaskRegistered,
+            EventType::ConditionNotMet,
             EventType::TaskClaimed,
             EventType::TaskExecuted,
             EventType::TaskExpired,
@@ -85,6 +90,7 @@ impl EventType {
             EventType::Initialized,
             EventType::Upgraded,
             EventType::ReputationUpdated,
+            EventType::OraclePriceConditionSet,
         ];
         ALL.into_iter().find(|e| e.topics() == (verb, noun))
     }
@@ -93,6 +99,7 @@ impl EventType {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TaskRegistered => "task_registered",
+            Self::ConditionNotMet => "condition_not_met",
             Self::TaskClaimed => "task_claimed",
             Self::TaskExecuted => "task_executed",
             Self::TaskExpired => "task_expired",
@@ -108,13 +115,15 @@ impl EventType {
             Self::Initialized => "initialized",
             Self::Upgraded => "upgraded",
             Self::ReputationUpdated => "reputation_updated",
+            Self::OraclePriceConditionSet => "oracle_price_condition_set",
         }
     }
 
     /// Parse the wire name produced by [`Self::as_str`].
     pub fn parse(s: &str) -> Option<Self> {
-        const ALL: [EventType; 16] = [
+        const ALL: [EventType; 17] = [
             EventType::TaskRegistered,
+            EventType::ConditionNotMet,
             EventType::TaskClaimed,
             EventType::TaskExecuted,
             EventType::TaskExpired,
@@ -130,6 +139,7 @@ impl EventType {
             EventType::Initialized,
             EventType::Upgraded,
             EventType::ReputationUpdated,
+            EventType::OraclePriceConditionSet,
         ];
         ALL.into_iter().find(|e| e.as_str() == s)
     }
@@ -150,6 +160,11 @@ pub enum EventPayload {
         #[schema(value_type = String)]
         reward: I128,
         deadline: u64,
+        condition: Option<String>,
+    },
+    ConditionNotMet {
+        task_id: u64,
+        condition: String,
     },
     TaskClaimed {
         task_id: u64,
@@ -226,6 +241,13 @@ pub enum EventPayload {
         #[schema(value_type = String)]
         score: I128,
     },
+    OraclePriceConditionSet {
+        task_id: u64,
+        oracle: String,
+        asset: String,
+        #[schema(value_type = String)]
+        threshold: I128,
+    },
 }
 
 impl EventPayload {
@@ -233,6 +255,7 @@ impl EventPayload {
     pub const fn event_type(&self) -> EventType {
         match self {
             Self::TaskRegistered { .. } => EventType::TaskRegistered,
+            Self::ConditionNotMet { .. } => EventType::ConditionNotMet,
             Self::TaskClaimed { .. } => EventType::TaskClaimed,
             Self::TaskExecuted { .. } => EventType::TaskExecuted,
             Self::TaskExpired { .. } => EventType::TaskExpired,
@@ -248,6 +271,7 @@ impl EventPayload {
             Self::Initialized { .. } => EventType::Initialized,
             Self::Upgraded { .. } => EventType::Upgraded,
             Self::ReputationUpdated { .. } => EventType::ReputationUpdated,
+            Self::OraclePriceConditionSet { .. } => EventType::OraclePriceConditionSet,
         }
     }
 
@@ -255,12 +279,14 @@ impl EventPayload {
     pub const fn task_id(&self) -> Option<u64> {
         match self {
             Self::TaskRegistered { task_id, .. }
+            | Self::ConditionNotMet { task_id, .. }
             | Self::TaskClaimed { task_id, .. }
             | Self::TaskExecuted { task_id, .. }
             | Self::TaskExpired { task_id }
             | Self::TaskCancelled { task_id, .. }
             | Self::RewardIncreased { task_id, .. }
-            | Self::DeadlineExtended { task_id, .. } => Some(*task_id),
+            | Self::DeadlineExtended { task_id, .. }
+            | Self::OraclePriceConditionSet { task_id, .. } => Some(*task_id),
             _ => None,
         }
     }
@@ -279,6 +305,18 @@ impl EventPayload {
             Self::TaskClaimed { keeper, .. }
             | Self::TaskExecuted { keeper, .. }
             | Self::RewardsWithdrawn { keeper, .. } => Some(keeper),
+            _ => None,
+        }
+    }
+
+    /// The condition address this event identifies, if any.
+    pub fn condition(&self) -> Option<&str> {
+        match self {
+            Self::TaskRegistered {
+                condition: Some(condition),
+                ..
+            }
+            | Self::ConditionNotMet { condition, .. } => Some(condition),
             _ => None,
         }
     }
@@ -379,6 +417,7 @@ mod tests {
             "initialized",
             "upgraded",
             "reputation_updated",
+            "oracle_price_condition_set",
         ] {
             let ty = EventType::parse(name).expect("known event name");
             let (verb, noun) = ty.topics();
@@ -415,6 +454,7 @@ mod tests {
             owner: "GOWNER".into(),
             reward: I128(100),
             deadline: 900,
+            condition: None,
         };
         assert_eq!(registered.owner(), Some("GOWNER"));
         assert_eq!(registered.keeper(), None);

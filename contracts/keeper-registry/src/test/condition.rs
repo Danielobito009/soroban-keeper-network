@@ -25,6 +25,10 @@ struct TaskBeforeConditions {
     lock_ledgers: u32,
     verifier: Option<Address>,
 }
+use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address ,Bytes,  Env};
+
+use super::common::*;
+use crate::{KeeperError, TaskStatus, TaskType};
 
 #[contract]
 struct TestCondition;
@@ -158,6 +162,11 @@ fn is_claimable_and_claim_task_share_condition_and_state_guards() {
     s.registry.claim_task(&first, &id);
 
     // Claimed + active lock: task state wins regardless of condition value.
+    assert!(!s.registry.is_claimable(&id));
+    assert_eq!(
+        s.registry.try_claim_task(&second, &id),
+        Err(Ok(KeeperError::LockPeriodActive))
+    );
     condition_client.set(&0);
     assert!(!s.registry.is_claimable(&id));
     assert_eq!(

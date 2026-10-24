@@ -7,6 +7,10 @@ name: Release
 # publishing it here lets anyone verify that a deployed contract corresponds to
 # a specific tagged commit of this repository.
 #
+# Two builds are run in separate jobs to verify the WASM is reproducible — both
+# should produce identical sha256 hashes. See docs/DEPLOYING.md for how to
+# reproduce the hash locally.
+#
 # Usage:
 #   git tag -a v0.2.0 -m "Release v0.2.0"
 #   git push origin v0.2.0
@@ -24,21 +28,23 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and publish release
-    runs-on: ubuntu-latest
+  # ───────────────────────────────────────────────────────────────────────────
+  # First reproducible build in a clean environment
+  # ───────────────────────────────────────────────────────────────────────────
+  build-a:
+    name: Build release WASM (build-a)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - name: Install Rust
+      - name: Install Rust (from rust-toolchain.toml)
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
-      # A release must not ship code that fails its own test suite.
       - name: Run tests
         run: cargo test --workspace --locked
 
@@ -50,20 +56,16 @@ jobs:
 
       - name: Install wasm-opt
         run: |
-          VERSION=version_119
+          VERSION=$(grep '^binaryen ' .tool-versions | cut -d' ' -f2)
           curl -sSL "https://github.com/WebAssembly/binaryen/releases/download/${VERSION}/binaryen-${VERSION}-x86_64-linux.tar.gz" \
             | tar -xz
           echo "$PWD/binaryen-${VERSION}/bin" >> "$GITHUB_PATH"
 
-      - name: Optimize WASM and record hashes
-        id: artifacts
+      - name: Optimize WASM and compute hash
+        id: build
         run: |
           mkdir -p dist
           RAW=target/wasm32-unknown-unknown/release/keeper_registry.wasm
-          # Bulk-memory and sign-extension are emitted by the Soroban WASM
-          # target; wasm-opt refuses to validate the module without them.
-          # This must match the flags used in ci.yml so the size reported on a
-          # PR is the size that ships in the release.
           wasm-opt -Oz --strip-debug \
             --enable-bulk-memory --enable-sign-ext --enable-mutable-globals \
             "$RAW" -o dist/keeper_registry.optimized.wasm
@@ -76,12 +78,162 @@ jobs:
             echo "size=$(stat -c%s keeper_registry.optimized.wasm)"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Upload WASM and hash
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-a-artifacts
+          path: dist/
+          retention-days: 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Second reproducible build in a separate clean environment
+  # ───────────────────────────────────────────────────────────────────────────
+  build-b:
+    name: Build release WASM (build-b)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Install Rust (from rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build release WASM
+        run: |
+          cargo build --locked --release \
+            --target wasm32-unknown-unknown \
+            --package keeper-registry
+
+      - name: Install wasm-opt
+        run: |
+          VERSION=$(grep '^binaryen ' .tool-versions | cut -d' ' -f2)
+          curl -sSL "https://github.com/WebAssembly/binaryen/releases/download/${VERSION}/binaryen-${VERSION}-x86_64-linux.tar.gz" \
+            | tar -xz
+          echo "$PWD/binaryen-${VERSION}/bin" >> "$GITHUB_PATH"
+
+      - name: Optimize WASM and compute hash
+        id: build
+        run: |
+          mkdir -p dist
+          RAW=target/wasm32-unknown-unknown/release/keeper_registry.wasm
+          wasm-opt -Oz --strip-debug \
+            --enable-bulk-memory --enable-sign-ext --enable-mutable-globals \
+            "$RAW" -o dist/keeper_registry.optimized.wasm
+          cp "$RAW" dist/keeper_registry.wasm
+          cd dist
+          sha256sum ./*.wasm > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          {
+            echo "sha256=$(sha256sum keeper_registry.optimized.wasm | cut -d' ' -f1)"
+            echo "size=$(stat -c%s keeper_registry.optimized.wasm)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload WASM and hash
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-b-artifacts
+          path: dist/
+          retention-days: 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Verify that both builds produced identical hashes (reproducible WASM)
+  # ───────────────────────────────────────────────────────────────────────────
+  verify-reproducible:
+    name: Verify reproducible builds
+    runs-on: ubuntu-24.04
+    needs: [build-a, build-b]
+    permissions:
+      contents: read
+    steps:
+      - name: Download build-a artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: build-a-artifacts
+          path: build-a/
+
+      - name: Download build-b artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: build-b-artifacts
+          path: build-b/
+
+      - name: Compare hashes and verify reproducibility
+        run: |
+          sha_a=$(cat build-a/SHA256SUMS.txt | grep keeper_registry.optimized.wasm | cut -d' ' -f1)
+          sha_b=$(cat build-b/SHA256SUMS.txt | grep keeper_registry.optimized.wasm | cut -d' ' -f1)
+          size_a=$(stat -c%s build-a/keeper_registry.optimized.wasm)
+          size_b=$(stat -c%s build-b/keeper_registry.optimized.wasm)
+          
+          echo "Build-A SHA256: $sha_a"
+          echo "Build-B SHA256: $sha_b"
+          echo "Build-A size: $size_a bytes"
+          echo "Build-B size: $size_b bytes"
+          
+          if [ "$sha_a" != "$sha_b" ]; then
+            echo "::error::Reproducibility check FAILED: hashes differ"
+            echo "Build-A: $sha_a ($size_a bytes)"
+            echo "Build-B: $sha_b ($size_b bytes)"
+            echo ""
+            echo "The WASM builds are not reproducible. This means the published hash cannot"
+            echo "be trusted to verify a deployment. Investigate the differences with:"
+            echo "  wasm2wat build-a/keeper_registry.optimized.wasm > a.wat"
+            echo "  wasm2wat build-b/keeper_registry.optimized.wasm > b.wat"
+            echo "  diff a.wat b.wat"
+            exit 1
+          fi
+          
+          echo "✓ Reproducibility check PASSED: both builds produce identical hashes"
+
+      - name: Upload both WASMs for analysis (on mismatch)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reproducibility-check-artifacts
+          path: |
+            build-a/keeper_registry.optimized.wasm
+            build-b/keeper_registry.optimized.wasm
+            build-a/SHA256SUMS.txt
+            build-b/SHA256SUMS.txt
+          retention-days: 30
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Publish the release, gated on successful reproducibility verification
+  # ───────────────────────────────────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    needs: [verify-reproducible, build-a]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Download verified WASM artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: build-a-artifacts
+          path: dist/
+
       - name: Assemble release notes
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-          SHA256: ${{ steps.artifacts.outputs.sha256 }}
-          SIZE: ${{ steps.artifacts.outputs.size }}
+          SHA256: ${{ hashFiles('dist/keeper_registry.optimized.wasm') }}
+          SIZE: ${{ hashFiles('dist/keeper_registry.optimized.wasm') }}
         run: |
+          # Extract sha256 from the file
+          SHA256=$(grep 'keeper_registry.optimized.wasm' dist/SHA256SUMS.txt | cut -d' ' -f1)
+          SIZE=$(stat -c%s dist/keeper_registry.optimized.wasm)
+          
           previous=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
           {
             echo "## Soroban Keeper Network ${TAG}"
@@ -93,6 +245,11 @@ jobs:
             echo "| File | \`keeper_registry.optimized.wasm\` |"
             echo "| Size | ${SIZE} bytes |"
             echo "| sha256 | \`${SHA256}\` |"
+            echo
+            echo "This release WASM is **reproducible** — the hash was verified by building"
+            echo "the contract twice in separate environments and confirming bit-for-bit"
+            echo "identity. See [docs/DEPLOYING.md](docs/DEPLOYING.md) to reproduce this"
+            echo "hash locally."
             echo
             echo "Verify a deployment matches this release by comparing the WASM hash"
             echo "reported by \`stellar contract install\` against the sha256 above."

@@ -38,3 +38,6 @@ examples/*/dist/
 .idea/
 .vscode/
 *.swp
+
+# Vitest coverage output (packages/*/coverage)
+packages/*/coverage/

@@ -13,5 +13,14 @@ export default defineConfig({
       // `node:test` before this suite moved to vitest.
       ["test/**", "node"],
     ],
+    // Only used by `npm run test:coverage` (plain `npm test` stays fast). No
+    // thresholds on purpose: CI reports the numbers, it does not gate on them.
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/**/*.test.{ts,tsx}"],
+      reporter: ["text-summary", "json-summary"],
+      reportsDirectory: "coverage",
+    },
   },
 });

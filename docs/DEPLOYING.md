@@ -28,7 +28,42 @@ stellar keys generate deployer --network testnet
 stellar keys fund deployer --network testnet
 ```
 
-## 3. Deploy
+## 3. Deploy and Initialize with `skn deploy` (Recommended)
+
+The `skn` CLI (`packages/cli`) uploads WASM, deploys, initializes, and writes
+the deployed contract IDs directly to your selected profile in
+`~/.config/skn/skn.config.json`. It prints every initialization parameter for
+confirmation before submitting and refuses mainnet deployments without
+`--confirm-mainnet`.
+
+```bash
+# Initialize default profiles (testnet, futurenet, mainnet) if you have not yet:
+skn config init
+
+# Deploy and initialize KeeperRegistry on testnet (saves contractId to profile):
+skn deploy registry \
+  --wasm target/wasm32-unknown-unknown/release/keeper_registry.wasm \
+  --identity deployer \
+  --profile testnet \
+  --fee-bps 300
+
+# Deploy and initialize Treasury on testnet (saves treasuryContractId to profile):
+skn deploy treasury \
+  --wasm target/wasm32-unknown-unknown/release/keeper_treasury.wasm \
+  --identity deployer \
+  --profile testnet
+
+# Or deploy and initialize both in one step:
+skn deploy all \
+  --registry-wasm target/wasm32-unknown-unknown/release/keeper_registry.wasm \
+  --treasury-wasm target/wasm32-unknown-unknown/release/keeper_treasury.wasm \
+  --identity deployer \
+  --profile testnet
+```
+
+For mainnet, pass `--network mainnet --confirm-mainnet` explicitly.
+
+## 4. Deploy and Initialize Manually with `stellar` CLI
 
 ```bash
 stellar contract deploy \
@@ -39,8 +74,6 @@ stellar contract deploy \
 ```
 
 > The repo also ships `scripts/deploy.sh` which wraps these steps.
-
-## 4. Initialize
 
 Pick a reward token — on testnet you can use the native XLM SAC address from
 `stellar contract id asset --asset native --network testnet`.
@@ -114,6 +147,101 @@ cd /path/to/soroban-keeper-network/examples/keeper-bot
 
 This setup ensures that even if one run fails, the next minute's run will try
 again, providing resilience without requiring a long-lived process.
+
+## Reproducing a release hash locally
+
+The release WASM is **reproducible** — the GitHub release includes a sha256
+that you can verify by building the contract locally from the same tagged commit.
+This proves that the published binary corresponds to the tagged source code and
+hasn't been altered.
+
+### Prerequisites
+
+- Rust `1.80.0` with the `wasm32-unknown-unknown` target (pinned in
+  `rust-toolchain.toml`)
+- binaryen `version_119` / wasm-opt (pinned in `.tool-versions`)
+- git
+
+### Steps
+
+1. **Check out the release tag:**
+   ```bash
+   git checkout v0.2.0  # Replace with the version you want to verify
+   ```
+
+2. **Install the pinned Rust toolchain:**
+   ```bash
+   rustup update
+   rustup target add wasm32-unknown-unknown
+   ```
+   The exact version is read from `rust-toolchain.toml` automatically by
+   `rustup` and `cargo`. You should see Rust 1.82.0 when you run `cargo build`.
+
+3. **Install wasm-opt (binaryen):**
+   ```bash
+   VERSION=$(grep '^binaryen ' .tool-versions | cut -d' ' -f2)
+   curl -sSL "https://github.com/WebAssembly/binaryen/releases/download/${VERSION}/binaryen-${VERSION}-x86_64-linux.tar.gz" \
+     | tar -xz
+   export PATH="$PWD/binaryen-${VERSION}/bin:$PATH"
+   ```
+
+4. **Build the contract:**
+   ```bash
+   cargo build --locked --release \
+     --target wasm32-unknown-unknown \
+     --package keeper-registry
+   ```
+
+5. **Optimize the WASM:**
+   ```bash
+   mkdir -p dist
+   RAW=target/wasm32-unknown-unknown/release/keeper_registry.wasm
+   wasm-opt -Oz --strip-debug \
+     --enable-bulk-memory --enable-sign-ext --enable-mutable-globals \
+     "$RAW" -o dist/keeper_registry.optimized.wasm
+   ```
+
+6. **Compute and compare the sha256:**
+   ```bash
+   sha256sum dist/keeper_registry.optimized.wasm
+   ```
+   Compare this output against the sha256 published on the GitHub release page.
+   They must match exactly.
+
+### If the hash doesn't match
+
+This could indicate:
+
+- **Wrong Rust version:** verify `rustc --version` shows `1.82.0`. If not,
+  `rustup` may not have read `rust-toolchain.toml`. Try `rustup show` to
+  confirm the override is active.
+- **Wrong wasm-opt version:** verify the downloaded binaryen is `version_119`.
+  Check `wasm-opt --version`.
+- **Dirty working tree:** `cargo build` will include uncommitted changes. Run
+  `git status` and ensure the checkout is clean.
+- **Different checkout path:** absolute paths were deliberately suppressed via
+  RUSTFLAGS (see below), but if you encounter differences, check that both
+  builds used similar directory structures.
+- **Different OS/architecture:** reproducibility is verified on `ubuntu-24.04`
+  with `x86_64`. Builds on macOS or ARM may differ due to compiler or linker
+  differences. Use the published CI hash as the source of truth.
+
+### Troubleshooting with binary diffs
+
+If hashes still differ, use `wasm2wat` to inspect the binaries:
+
+```bash
+# Install wasm2wat (comes with binaryen)
+wasm2wat dist/keeper_registry.optimized.wasm > a.wat
+
+# Download the published WASM from the GitHub release and compare
+wasm2wat keeper_registry.optimized.wasm > b.wat
+diff a.wat b.wat
+```
+
+This will show the first code or data difference. File a GitHub issue with
+the diff and your environment details (OS, Rust version, binaryen version) so
+the maintainers can investigate.
 
 ## Verifying a deployment
 
