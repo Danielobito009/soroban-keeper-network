@@ -1,0 +1,185 @@
+# Cargo-deny configuration for the Soroban Keeper Network
+#
+# This file specifies which licenses, dependency versions, and security advisories
+# are permitted in the project's dependency graph. It is checked by the CI job
+# `.github/workflows/ci.yml::deny` and the local `cargo deny check` command.
+#
+# To update this file when adding a new dependency:
+#
+# 1. Run `cargo deny check licenses` locally and note any new licenses.
+# 2. If the license is already in the allow-list below, no action is needed.
+# 3. If it is new:
+#    - Check if it is a common permissive license (MIT, Apache-2.0, BSD, MPL-2.0).
+#    - If it is a restrictive license (GPL, AGPL) or non-standard (LicenseRef-*),
+#      open an issue or discussion for maintainer approval before adding it.
+#    - Add the SPDX identifier to the `allow` list below with a comment explaining
+#      why it is permitted (e.g., "required by the indexer's Postgres bindings").
+#
+# For more information on cargo-deny and license identifiers, see:
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Database of security advisories. Checks against the RustSec advisory database.
+# See https://rustsec.org/
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db/raw/main/db.json.gz"]
+
+# Treat advisories as warnings (advisory-first rollout, matching the `audit` job).
+# Warnings appear in the job summary but do not block the PR. This can be changed
+# to "deny" once the team has reviewed and triaged all existing advisories.
+vulnerability = "warn"
+
+# Treat yanked (unpublished) crates as warnings. Matches the advisory-first approach.
+# If a yanked crate is discovered, it will be reported but not fail the check.
+yanked = "warn"
+
+# Treat unmaintained crates as warnings. An unmaintained dependency is not
+# necessarily a security issue, but it warrants review.
+unmaintained = "warn"
+
+# Crates with unspecified MSRV (Minimum Supported Rust Version) are allowed.
+notice = "warn"
+
+# Do not ignore any advisories by default. If a specific advisory must be ignored
+# (e.g., a known issue with a workaround), it can be added here with a comment
+# explaining the rationale. Format:
+#   ignore = [
+#     { id = "RUSTSEC-YYYY-NNNNN", reason = "Detailed explanation" },
+#   ]
+ignore = []
+
+[licenses]
+# Only allow licenses that the project and its contributors have reviewed and approved.
+# This is an acceptance criterion: the allow-list must match what is actually used,
+# not be a broad "permissive by default" list.
+
+# Common permissive open-source licenses
+allow = [
+  # Core ecosystem licenses
+  "Apache-2.0",
+  "MIT",
+  "MIT OR Apache-2.0",
+  "Apache-2.0 OR MIT",
+  
+  # BSD licenses (permissive, commonly used in cryptography)
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSD-3-Clause-Clear",
+  
+  # ISC (permissive, used in Node.js ecosystem)
+  "ISC",
+  
+  # MPL-2.0 (weak copyleft, compatible with proprietary software)
+  "MPL-2.0",
+  
+  # Additional permissive licenses
+  "Zlib",
+  "CC0-1.0",
+  "Unlicense",
+]
+
+# Copyleft licenses are explicitly NOT allowed by default. If a copyleft
+# dependency is required, it must be exceptional and approved by maintainers.
+# Current policy: reject GPL*, AGPL*, and SSPL.
+deny = [
+  "GPL-2.0",
+  "GPL-2.0-only",
+  "GPL-2.0-or-later",
+  "GPL-3.0",
+  "GPL-3.0-only",
+  "GPL-3.0-or-later",
+  "AGPL-1.0",
+  "AGPL-1.0-only",
+  "AGPL-1.0-or-later",
+  "AGPL-3.0",
+  "AGPL-3.0-only",
+  "AGPL-3.0-or-later",
+]
+
+# Confidence threshold for license detection (0.0 to 1.0).
+# The default 0.8 is appropriate: it allows some false positives but catches
+# nearly all real licenses. Raise this only if license detection is too strict.
+confidence-threshold = 0.8
+
+# Clarifications for specific crates with ambiguous or composite licenses.
+# Use sparingly and only when cargo deny cannot auto-detect the correct license.
+# Per-crate exceptions avoid widening the global allow-list.
+exceptions = [
+  # If a crate uses a non-standard license identifier (e.g., LicenseRef-*),
+  # specify it here as: { name = "crate-name", allow = ["LicenseRef-Custom"] }
+]
+
+[bans]
+# Detect and report duplicate versions of the same crate across the dependency graph.
+# Multiple major versions of a transitive dependency can introduce unexpected behavior
+# and increase binary size. A "warn" level is appropriate for an advisory-first rollout;
+# it can be raised to "deny" once duplicates are reviewed and resolved.
+multiple-versions = "warn"
+
+# Detect and warn about wildcard path dependencies (e.g., `path = "../*"`).
+# These are rare and usually unintended. Workspace path dependencies are fine
+# (e.g., `path = "../other-crate"` in the same workspace) and are allowed below.
+wildcards = "warn"
+
+# Allow path dependencies within the workspace (this is the default behavior,
+# but made explicit for clarity). A path dependency on a workspace member is
+# not a "wildcard" and is safe.
+allow-wildcard-paths = true
+
+# Workspace members that should be allowed as path dependencies.
+# This list includes all members of the workspace (Cargo.toml [workspace] members),
+# plus the fuzz crate which is deliberately excluded from the workspace but exists
+# in the repo.
+allow = [
+  { name = "keeper-registry" },
+  { name = "keeper-treasury", package = "keeper-treasury" },
+  { name = "indexer", package = "keeper-indexer" },
+  { name = "rust-sdk", package = "soroban-keeper-sdk" },
+  # Note: the fuzz crate (fuzz/Cargo.toml) is excluded from the main workspace
+  # (it declares [workspace] empty) to prevent libfuzzer-sys from being pulled
+  # into normal builds. Its dependencies are checked separately when running
+  # `cargo deny check` from the fuzz/ directory. This is expected and not a
+  # configuration error.
+]
+
+# Explicitly deny specific crates or versions if there is a known issue or policy.
+# This list is empty by default; add entries only if a crate must be blocked entirely
+# or a specific version has a known problem. Format:
+#   deny = [
+#     { name = "unwanted-crate" },
+#     { name = "problematic-crate", version = "1.2.3" },
+#   ]
+deny = []
+
+[sources]
+# Only allow crates from crates.io and explicitly approved git repositories.
+# Mismatched or unusual sources often indicate typosquatting or dependency confusion.
+
+# Allow only crates from the official crates.io registry.
+allow-org = ["https://github.com"]
+
+# Allow crates from specific git repositories if the project uses git dependencies.
+# Currently, all dependencies are from crates.io. If a git dependency is added
+# (e.g., a Soroban SDK fork or a custom contract), add it here explicitly.
+allow-git = []
+
+# Warn about crates from unusual sources (e.g., local registries, mirrors).
+# This catches mistakes like a mistyped registry URL or a typosquatted crate.
+allow = [
+  { allow = ["https://github.com/rust-lang/crates.io-index"] },
+]
+
+# Explicitly deny specific sources as a policy enforcement mechanism.
+# For example, to disallow private registries or forks unless explicitly approved.
+deny = []
+
+[graph]
+# Dependency graph options.
+
+# Target architectures to resolve. Include wasm32-unknown-unknown because contracts
+# are built for that target. This ensures dependencies with target-specific features
+# (like getrandom with web crypto) are included in the license and advisory checks.
+targets = [
+  { triple = "x86_64-unknown-linux-gnu" },
+  { triple = "wasm32-unknown-unknown" },
+]

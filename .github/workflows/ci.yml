@@ -80,6 +80,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Shared host/dev-profile cache. This job is the only one that saves it;
+      # resource-cost, indexer and rust-sdk restore it read-only (they compile
+      # the same workspace for the same target in the same profile). Jobs whose
+      # artifacts differ keep their own key: build-wasm (wasm32, release),
+      # clippy (check-only metadata) and the fuzz jobs (nightly, fuzz/target).
       - name: Cache cargo
         uses: actions/cache@v6
         with:
@@ -88,8 +93,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-
+          key: ${{ runner.os }}-cargo-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-host-
 
       - name: cargo test
         run: cargo test --workspace --locked
@@ -144,6 +149,19 @@ jobs:
         with:
           name: treasury-wasm
           path: target/wasm32-unknown-unknown/release/keeper_treasury.wasm
+          retention-days: 14
+          if-no-files-found: error
+      - name: Build release WASM (time-window-condition)
+        run: |
+          cargo build --locked --release \
+            --target wasm32-unknown-unknown \
+            --package time-window-condition
+
+      - name: Upload time-window-condition WASM artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: time-window-condition-wasm
+          path: target/wasm32-unknown-unknown/release/time_window_condition.wasm
           retention-days: 14
           if-no-files-found: error
 
@@ -209,6 +227,48 @@ jobs:
               jq -r '.vulnerabilities.list[] | "- **\(.advisory.id)** in `\(.package.name) \(.package.version)` — \(.advisory.title)"' audit.json
               echo
               echo "_Advisory only — this does not block the PR._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # ADVISORY — license, dependency ban, and security advisory checks via
+  # cargo-deny. Licenses must match the allow-list in deny.toml; duplicate
+  # crate versions and known yanked crates are reported. Advisory-first rollout
+  # matching the `audit` job, so findings surface without blocking the PR.
+  # ───────────────────────────────────────────────────────────────────────────
+  deny:
+    name: Dependency check (licenses, bans, advisories, sources) (advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.17.1
+
+      - name: cargo deny check
+        run: |
+          cargo deny check --all-features 2>&1 | tee deny-output.txt || true
+          {
+            echo "### Dependency check (licenses, bans, advisories, sources)"
+            echo
+            if grep -q "error:" deny-output.txt; then
+              echo "Cargo-deny reported errors (advisory only — this does not block the PR):"
+              echo
+              echo '```'
+              grep -A 2 "^error:" deny-output.txt || cat deny-output.txt
+              echo '```'
+            elif grep -q "warning:" deny-output.txt; then
+              echo "Cargo-deny reported warnings (advisory only — this does not block the PR):"
+              echo
+              echo '```'
+              grep -A 2 "^warning:" deny-output.txt || cat deny-output.txt
+              echo '```'
+            else
+              echo "All license, ban, advisory, and source checks passed."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -477,16 +537,16 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: actions/cache@v6
+      - name: Restore shared cargo cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-test-
+          key: ${{ runner.os }}-cargo-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-host-
 
       - name: Measure resource cost per entry point
         run: |
@@ -505,8 +565,17 @@ jobs:
   # copies the referenced directory as-is, it does not build it.
   # ───────────────────────────────────────────────────────────────────────────
   sdk-ts:
-    name: SDK (TypeScript) (required)
+    name: SDK (TypeScript, Node ${{ matrix.node }}) (required)
     runs-on: ubuntu-latest
+    strategy:
+      # Let every Node version finish so one failure shows the whole picture.
+      fail-fast: false
+      matrix:
+        # Keep in step with `engines.node` in packages/sdk-ts/package.json:
+        # that field promises "20 and up", this list is what proves it. Node 18
+        # is not listed because it has no global `crypto`, which
+        # @stellar/stellar-sdk needs (17 sdk-ts tests fail there).
+        node: ["20", "22"]
     defaults:
       run:
         working-directory: packages/sdk-ts
@@ -515,7 +584,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: ${{ matrix.node }}
 
       - name: Install dependencies
         # npm ci (not npm install) so a package.json/package-lock.json
@@ -531,9 +600,36 @@ jobs:
         run: npm run build
 
       - name: Test
+        if: matrix.node != '20'
         run: npm test
 
+      # Node 20 runs the same suite with coverage on, so the numbers are
+      # reported once rather than once per matrix leg. Reporting only: there is
+      # no threshold, so low coverage never fails the job.
+      - name: Test with coverage
+        if: matrix.node == '20'
+        run: npm run test:coverage
+
+      - name: Coverage summary
+        if: matrix.node == '20' && !cancelled()
+        run: |
+          {
+            echo "### sdk-ts coverage"
+            echo
+            if [ -f coverage/coverage-summary.json ]; then
+              echo "| Metric | Covered | Total | % |"
+              echo "|--------|---------|-------|---|"
+              jq -r '.total | to_entries[] | select(.key | IN("statements","branches","functions","lines")) | "| \(.key) | \(.value.covered) | \(.value.total) | \(.value.pct)% |"' coverage/coverage-summary.json
+            else
+              echo "No coverage report was produced."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Only one leg uploads: every matrix leg would otherwise try to create
+      # the same artifact name. `bot` runs on Node 20, so the Node 20 build is
+      # the one it should consume.
       - name: Upload built package (for the bot job to consume)
+        if: matrix.node == '20'
         uses: actions/upload-artifact@v7
         with:
           name: sdk-ts-dist
@@ -678,6 +774,46 @@ jobs:
         run: npm run lint
 
   # ───────────────────────────────────────────────────────────────────────────
+  # ADVISORY — the `skn` command-line tool. Consumes the SDK build from the
+  # sdk-ts job the same way the bot does. Not in `ci-required` yet: it is a new
+  # package, and promoting it is a decision for the maintainers.
+  # ───────────────────────────────────────────────────────────────────────────
+  cli:
+    name: CLI (advisory)
+    runs-on: ubuntu-latest
+    needs: sdk-ts
+    defaults:
+      run:
+        working-directory: packages/cli
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - name: Download built SDK
+        uses: actions/download-artifact@v8
+        with:
+          name: sdk-ts-dist
+          path: packages/sdk-ts/dist
+
+      - name: Install SDK's own runtime dependencies
+        # Same reason as the bot job: Node resolves @stellar/stellar-sdk from
+        # the SDK's real path, so it must be installed under packages/sdk-ts.
+        working-directory: packages/sdk-ts
+        run: npm ci --no-audit --no-fund
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck and build
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  # ───────────────────────────────────────────────────────────────────────────
   # REQUIRED — the keeper-bot-v2 service. Build, lint, and test suite, with
   # an ephemeral Postgres service container for persistent state tests.
   #
@@ -774,14 +910,8 @@ jobs:
           echo "PR does not touch examples/keeper-bot-v2 or SDK dependencies; keeper-bot-v2 checks skipped."
 
   # ───────────────────────────────────────────────────────────────────────────
-  # REQUIRED — the indexer service. Format, build and test, with a real
-  # Postgres for the database-backed tests.
-  #
-  # The database is an ephemeral service container, created for this job and
-  # destroyed with it, rather than a shared instance. Tests here drop and
-  # recreate their tables, so a shared database would let concurrent runs
-  # corrupt each other's state and would make a green run depend on what else
-  # happened to be running at the time.
+  # REQUIRED — the indexer service. Format, build and test. Storage is
+  # SQLite, so the tests need no database service.
   #
   # Only runs when the PR touches indexer/ (or the workspace manifest, which
   # can change how the indexer builds). A contract-only PR skips it, in the
@@ -791,24 +921,6 @@ jobs:
   indexer:
     name: Indexer (required)
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: indexer_test
-        ports:
-          - 5432:5432
-        # Without a health check the job can start querying before Postgres is
-        # accepting connections, which fails as a confusing connection error
-        # rather than a wait.
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     steps:
       - uses: actions/checkout@v7
@@ -835,17 +947,17 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Cache cargo
+      - name: Restore shared cargo cache
         if: steps.changes.outputs.relevant == 'true'
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-indexer-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-indexer-
+          key: ${{ runner.os }}-cargo-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-host-
 
       - name: cargo fmt --check
         if: steps.changes.outputs.relevant == 'true'
@@ -855,32 +967,11 @@ jobs:
         if: steps.changes.outputs.relevant == 'true'
         run: cargo build --package keeper-indexer --locked
 
-      # INDEXER_TEST_DATABASE_URL is what makes the database-backed tests run.
-      # When it is unset they skip themselves, which is what keeps the
-      # workspace-wide `test` job (and a contract contributor's laptop) green
-      # without a Postgres. Here it is set, so they must actually execute —
-      # hence the assertion on the result count below.
+      # The tests run against in-memory SQLite and a mock RPC, so the job
+      # needs no service containers.
       - name: Test
         if: steps.changes.outputs.relevant == 'true'
-        env:
-          INDEXER_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/indexer_test
         run: cargo test --package keeper-indexer --locked -- --nocapture
-
-      # A test that skips itself still exits 0, so a misconfigured database URL
-      # would turn the whole suite into a silent no-op and the job would stay
-      # green. Failing when any test reports a skip is what stops this job from
-      # passing vacuously.
-      - name: Verify the database-backed tests actually ran
-        if: steps.changes.outputs.relevant == 'true'
-        env:
-          INDEXER_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/indexer_test
-        run: |
-          output=$(cargo test --package keeper-indexer --locked -- --nocapture 2>&1)
-          if echo "$output" | grep -q "skipping: INDEXER_TEST_DATABASE_URL"; then
-            echo "::error::A database-backed test skipped itself even though a database was configured."
-            exit 1
-          fi
-          echo "All database-backed tests ran against the service container."
 
       - name: Skip notice
         if: steps.changes.outputs.relevant == 'false'
@@ -903,8 +994,51 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Restore shared cargo cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-cargo-host-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-host-
+
       - name: Rust SDK tests
         run: cargo test --package soroban-keeper-sdk --locked
+
+  # ADVISORY - exercises the Rust SDK against a real local RPC on main only.
+  rust-sdk-quickstart:
+    name: Rust SDK Quickstart (advisory)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Start Stellar Quickstart
+        uses: stellar/quickstart@main
+        with:
+          tag: testing
+          network: local
+          enable: core,horizon,rpc
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        uses: stellar/stellar-cli@v23.0.1
+
+      - name: Build registry contract
+        run: cargo build --locked --release --target wasm32-unknown-unknown --package keeper-registry
+
+      - name: Run Quickstart integration test
+        env:
+          SKN_INTEGRATION_RPC_URL: http://localhost:8000/rpc
+        run: cargo test --locked --package soroban-keeper-sdk --test integration_quickstart -- --nocapture
 
   # ───────────────────────────────────────────────────────────────────────────
   # Aggregate gate. Branch protection should require only this single check;
@@ -927,4 +1061,3 @@ jobs:
             fi
           done
           echo "All required checks passed."
-

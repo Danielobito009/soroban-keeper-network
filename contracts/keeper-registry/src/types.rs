@@ -168,6 +168,9 @@ pub struct Task {
     /// the `verifier` field (issue 0072) established. If future Soroban SDK
     /// versions change this behavior, a follow-up migration issue will be filed
     /// with the new findings.
+    /// Optional on-chain predicate evaluated before a claim is written.
+    /// `None` preserves the original claim path. A configured condition must
+    /// implement `ITaskCondition`; false or failed calls reject the claim.
     pub condition: Option<Address>,
 }
 
@@ -186,6 +189,8 @@ pub struct BatchTaskParams {
     pub ttl_ledgers: u32,
     pub lock_ledgers: u32,
     pub verifier: Option<Address>,
+    /// Optional condition, with the same validation and semantics as
+    /// `register_task`'s `condition` argument.
     pub condition: Option<Address>,
 }
 

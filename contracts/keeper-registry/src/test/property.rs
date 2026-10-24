@@ -482,6 +482,7 @@ proptest! {
             &ttl_ledgers,
             &120u32,
             &None,
+            &None,
         );
 
         if (ttl_ledgers as u64) < required {

@@ -71,6 +71,38 @@ fn test_batch_register_registers_all_and_returns_ids_in_order() {
 }
 
 #[test]
+fn test_batch_register_persists_mixed_conditions() {
+    let s = setup();
+    let first_condition = Address::generate(&s.env);
+    let second_condition = Address::generate(&s.env);
+
+    let mut tasks = Vec::new(&s.env);
+    tasks.push_back(BatchTaskParams {
+        condition: Some(first_condition.clone()),
+        ..batch_entry(&s.env, 1_000_000)
+    });
+    tasks.push_back(batch_entry(&s.env, 1_000_000));
+    tasks.push_back(BatchTaskParams {
+        condition: Some(second_condition.clone()),
+        ..batch_entry(&s.env, 1_000_000)
+    });
+
+    let ids = s
+        .registry
+        .batch_register_tasks(&s.admin, &tasks, &3_000_000);
+
+    assert_eq!(
+        s.registry.get_task(&ids.get(0).unwrap()).condition,
+        Some(first_condition)
+    );
+    assert_eq!(s.registry.get_task(&ids.get(1).unwrap()).condition, None);
+    assert_eq!(
+        s.registry.get_task(&ids.get(2).unwrap()).condition,
+        Some(second_condition)
+    );
+}
+
+#[test]
 fn test_batch_register_max_total_reward_ceiling_rejects_whole_batch() {
     let s = setup();
     let token = token::Client::new(&s.env, &s.token_id);

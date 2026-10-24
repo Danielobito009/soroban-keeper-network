@@ -33,6 +33,11 @@ pub fn parse_event(raw: &RawEvent) -> Result<Option<EventPayload>> {
             owner: address_at(v, 1, event_type)?,
             reward: i128_at(v, 2, event_type)?.into(),
             deadline: u64_at(v, 3, event_type)?,
+            condition: optional_address_at(v, 4, event_type)?,
+        },
+        EventType::ConditionNotMet => EventPayload::ConditionNotMet {
+            task_id: u64_at(v, 0, event_type)?,
+            condition: address_at(v, 1, event_type)?,
         },
         EventType::TaskClaimed => EventPayload::TaskClaimed {
             task_id: u64_at(v, 0, event_type)?,
@@ -92,6 +97,12 @@ pub fn parse_event(raw: &RawEvent) -> Result<Option<EventPayload>> {
         EventType::Upgraded => EventPayload::Upgraded {
             admin: address_at(v, 0, event_type)?,
             new_wasm_hash: bytes_at(v, 1, event_type)?,
+        },
+        EventType::OraclePriceConditionSet => EventPayload::OraclePriceConditionSet {
+            task_id: u64_at(v, 0, event_type)?,
+            oracle: address_at(v, 1, event_type)?,
+            asset: symbol_at(v, 2, event_type)?,
+            threshold: i128_at(v, 3, event_type)?.into(),
         },
         // Recognised in the type system for the API's sake, but not parseable
         // from the wire yet: the contract's only reputation event today is
@@ -158,10 +169,34 @@ fn address_at(values: &[RawValue], index: usize, event: EventType) -> Result<Str
     }
 }
 
+fn optional_address_at(
+    values: &[RawValue],
+    index: usize,
+    event: EventType,
+) -> Result<Option<String>> {
+    let Some(value) = values.get(index) else {
+        // Registry versions before task conditions emitted a four-field
+        // TaskRegistered payload. The additive fifth field decodes as None.
+        return Ok(None);
+    };
+    match value {
+        RawValue::Void => Ok(None),
+        RawValue::Address(v) => Ok(Some(v.clone())),
+        other => Err(type_error(event, index, "address or void", other)),
+    }
+}
+
 fn bytes_at(values: &[RawValue], index: usize, event: EventType) -> Result<String> {
     match at(values, index, event)? {
         RawValue::Bytes(v) => Ok(v.clone()),
         other => Err(type_error(event, index, "bytes", other)),
+    }
+}
+
+fn symbol_at(values: &[RawValue], index: usize, event: EventType) -> Result<String> {
+    match at(values, index, event)? {
+        RawValue::Symbol(v) => Ok(v.clone()),
+        other => Err(type_error(event, index, "symbol", other)),
     }
 }
 
@@ -194,9 +229,17 @@ mod tests {
                         RawValue::Address("GOWNER".into()),
                         RawValue::I128(500),
                         RawValue::U64(900),
+                        RawValue::Void,
                     ],
                 ),
                 EventType::TaskRegistered,
+            ),
+            (
+                raw(
+                    ["condfail", "task"],
+                    vec![RawValue::U64(1), RawValue::Address("CCONDITION".into())],
+                ),
+                EventType::ConditionNotMet,
             ),
             (
                 raw(
@@ -315,7 +358,7 @@ mod tests {
             ),
         ];
 
-        assert_eq!(cases.len(), 15, "all fifteen contract events are covered");
+        assert_eq!(cases.len(), 16, "all parseable contract events are covered");
 
         for (event, expected) in cases {
             let parsed = parse_event(&event)
@@ -334,6 +377,7 @@ mod tests {
                 RawValue::Address("GOWNER".into()),
                 RawValue::I128(1_234),
                 RawValue::U64(9_999),
+                RawValue::Address("CCONDITION".into()),
             ],
         ))
         .expect("parses")
@@ -346,6 +390,7 @@ mod tests {
                 owner: "GOWNER".into(),
                 reward: I128(1_234),
                 deadline: 9_999,
+                condition: Some("CCONDITION".into()),
             }
         );
     }

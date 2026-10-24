@@ -15,9 +15,11 @@ without blocking your PR.
 | `bot-v2` | Required | The production keeper bot v2 (`examples/keeper-bot-v2`) must build, lint, and pass its test suite against an ephemeral Postgres service container. See [The keeper-bot-v2 job](#the-keeper-bot-v2-job). |
 | `indexer` | Required | The indexer service (`indexer/`) must format, build, and pass its test suite, including the database-backed tests. See [The indexer job](#the-indexer-job). |
 | `rust-sdk` | Required | The Rust SDK crate (`rust-sdk/`) must compile and pass all unit and integration tests. |
+| `rust-sdk-quickstart` | Advisory (`continue-on-error: true`) | On pushes to `main`, deploys the registry to a local Stellar Quickstart network and runs the opt-in Rust SDK lifecycle test. |
 | `indexer-client` | Required | The indexer's TypeScript client (`packages/indexer-client`) must typecheck, build, test and lint, and its generated types must match `indexer/openapi.yaml`. |
 | `clippy` | Advisory (`continue-on-error: true`) | Lints are useful but subjective enough that a maintainer should decide case-by-case, not have every PR blocked by a new upstream lint. |
 | `audit` | Advisory (`continue-on-error: true`) | A new upstream dependency CVE should notify maintainers, not fail every open PR the moment it's published. |
+| `deny` | Advisory (`continue-on-error: true`) | License allow-list enforcement, duplicate crate version detection, yanked crate warnings, and source validation via `cargo-deny`. See [Cargo-deny](#cargo-deny) below. |
 | `wasm-size` | Advisory (`continue-on-error: true`) | Reports binary size for visibility; see below. |
 | `sdk-ts-lint` | Advisory (`continue-on-error: true`) | `npm run lint` (ESLint) on `packages/sdk-ts`. Lint findings are subjective enough that a maintainer should decide case-by-case, the same reasoning as `clippy`. See [SDK typecheck and lint](#sdk-typecheck-and-lint). |
 | `sdk-bundle-size` | Advisory (`continue-on-error: true`) | Reports the SDK's minified+gzipped bundle size for visibility — the frontend analogue of `wasm-size`; see below. |
@@ -38,6 +40,28 @@ make ci
 `make ci` covers blocking checks only, so it does not lint the SDK. `make check`
 runs `make ci` plus the advisory lints (`make lint` for clippy, `make sdk-ts-lint`
 for the SDK's ESLint).
+
+## Rust SDK Quickstart integration
+
+`rust-sdk/tests/integration_quickstart.rs` deploys a fresh registry to a local
+Quickstart network and drives register, claim, execute, and withdraw through
+`KeeperRegistryClient`. It checks the registry's native-token balance after
+every transition. The test is opt-in so ordinary local and pull-request test
+runs do not require Docker or a live RPC.
+
+Run it after starting a local Quickstart network and building the contract:
+
+```bash
+cargo build --locked --release --target wasm32-unknown-unknown --package keeper-registry
+SKN_INTEGRATION_RPC_URL=http://localhost:8000/rpc \
+  cargo test --locked --package soroban-keeper-sdk \
+  --test integration_quickstart -- --nocapture
+```
+
+When `SKN_INTEGRATION_RPC_URL` is unset, the test prints a visible skip notice
+and returns successfully. The advisory `rust-sdk-quickstart` job sets it and
+runs only on pushes to `main`; outages or image/toolchain drift are reported
+without becoming part of the required `ci-required` aggregate.
 
 ## SDK typecheck and lint
 
@@ -65,7 +89,54 @@ make sdk-ts        # typecheck + build + test (required)
 make sdk-ts-lint   # ESLint (advisory)
 ```
 
-## The keeper-bot-v2 job
+## Cargo-deny
+
+The `deny` job runs `cargo deny check` to enforce:
+
+- **Licenses**: Every crate in the dependency graph must have a license in the allow-list (`deny.toml`). New dependencies must declare an OSI-approved license (MIT, Apache-2.0, BSD, etc.). Copyleft licenses (GPL, AGPL) are denied by policy.
+- **Bans**: Duplicate major versions of the same crate are reported as warnings, so the dependency tree remains minimal. A crate is rejected only if it is explicitly denied in `deny.toml`.
+- **Advisories**: Security advisories and yanked (unpublished) crates are reported as warnings, matching the advisory-first posture of the `audit` job.
+- **Sources**: Crates must come from `crates.io` or explicitly approved git repositories. Unusual sources (private registries, mirrors) are flagged.
+
+This is an **advisory-first rollout**: findings appear in the job summary but do not block the PR. Over time, as findings are reviewed and triaged, the job can be changed to `deny` (blocking) via `.github/workflows/ci.yml`.
+
+### License allow-list
+
+The allow-list in `deny.toml` is constructed from **actual project usage**: every license that appears in the workspace's dependency graph today. To add a new dependency with a previously-unseen license:
+
+1. Run `cargo add <crate>` in the workspace.
+2. Run `cargo deny check licenses` locally.
+3. If the license is new:
+   - Check if it is a common permissive license (MIT, Apache-2.0, BSD, MPL-2.0).
+   - If it is restrictive (GPL, AGPL) or non-standard, open an issue or discussion for maintainer approval first.
+   - Once approved, add the SPDX identifier to the `allow` list in `deny.toml` with a comment explaining why (e.g., "required by the indexer's database bindings").
+
+### Updating the policy
+
+To make the `deny` job blocking (required):
+
+1. Update `.github/workflows/ci.yml` to remove `continue-on-error: true` from the `deny` job.
+2. Update the table in this doc to change `deny` from "Advisory" to "Required".
+3. Open a PR and confirm all advisories and license mismatches have been reviewed.
+
+### Running locally
+
+```bash
+# Check licenses only
+cargo deny check licenses
+
+# Check for duplicate versions, yanked crates, and advisories
+cargo deny check
+
+# Detailed output with statistics
+cargo deny check --show-stats
+```
+
+See [`https://embarkstudios.github.io/cargo-deny/`](https://embarkstudios.github.io/cargo-deny/) for full `cargo-deny` documentation.
+
+## WASM size tracking
+
+The `wasm-size` job builds the release WASM, runs it through `wasm-opt -Oz`
 
 The `bot-v2` job covers `examples/keeper-bot-v2`: TypeScript compilation (`npm run build`), linting (`npm run lint`), and its test suites (`npm test`: vitest for the TypeScript service in `src/`, then `node --test` for the CommonJS components in `bot/`).
 
@@ -90,47 +161,18 @@ contract-only PR skips the work — but unlike the advisory `fuzz-pr` job, a
 skip still reports success, which is what lets `indexer` be a required check
 without blocking contract-only work.
 
-### The ephemeral database
+### No database service
 
-The indexer's interesting tests are database tests: the `ON CONFLICT`
-idempotency constraint, the balance view's arithmetic, and the "latest event
-of each kind wins" ordering are all properties of Postgres, not of the Rust
-around it. Mocking them would only assert that the code sends the SQL it
-sends.
+The indexer stores everything in SQLite, so its tests use in-memory databases
+and need no service container. `tests/service_process.rs` also starts the real
+`keeper-indexer` binary against a mock Soroban RPC on localhost, so the job
+exercises the same startup and shutdown path an operator gets. Nothing in the
+suite needs a network beyond loopback.
 
-So the job declares a Postgres **service container**, created for that job and
-destroyed with it. It is deliberately not a shared instance: these tests drop
-and recreate their tables on every run, so a shared database would let
-concurrent CI runs corrupt each other and make a green result depend on what
-else happened to be running at the time.
-
-The container declares a `pg_isready` health check. Without it the job can
-start querying before Postgres accepts connections, which surfaces as a
-confusing connection error instead of a wait.
-
-### Why the tests skip without a database
-
-The database-backed tests read `INDEXER_TEST_DATABASE_URL`. When it is unset
-they **skip rather than fail**, because the required `test` job runs
-`cargo test --workspace` on a runner with no Postgres, and a contract
-contributor running `make ci` on their laptop does not have one either.
-Neither should go red over a database they were never expected to have.
-
-That skip is a hole worth closing on the one runner that *does* have a
-database: a test that skips itself still exits 0, so a mistyped connection URL
-would turn the whole suite into a silent no-op while the job stayed green. The
-job therefore asserts the skip notice does **not** appear in the test output,
-and fails if it does. A green `indexer` job means the database tests really
-ran.
-
-To run them locally, point the variable at any throwaway Postgres:
+To run it locally:
 
 ```bash
-docker run -d --name kn-pg -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=indexer_test -p 5432:5432 postgres:16
-
-INDEXER_TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/indexer_test \
-  cargo test --package keeper-indexer
+cargo test --package keeper-indexer
 ```
 
 ## WASM size tracking

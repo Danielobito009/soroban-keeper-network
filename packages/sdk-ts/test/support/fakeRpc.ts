@@ -165,7 +165,27 @@ export class FakeRpc implements RpcServerLike {
 /** Pulls the entry point and arguments back out of a built transaction. */
 function record(tx: unknown): RecordedCall {
   const operation = (tx as { operations: { func: xdr.HostFunction }[] }).operations[0];
-  const invocation = (operation as { func: xdr.HostFunction }).func.invokeContract();
+  const func = (operation as { func: xdr.HostFunction }).func;
+  const kind = func.switch().name;
+  if (kind === "hostFunctionTypeUploadContractWasm") {
+    const wasm = Buffer.from(func.wasm());
+    return {
+      method: "upload_contract_wasm",
+      args: [new Uint8Array(wasm)],
+      rawArgs: [xdr.ScVal.scvBytes(wasm)],
+    };
+  }
+  if (
+    kind === "hostFunctionTypeCreateContract" ||
+    kind === "hostFunctionTypeCreateContractV2"
+  ) {
+    return {
+      method: "create_contract",
+      args: [],
+      rawArgs: [],
+    };
+  }
+  const invocation = func.invokeContract();
   const rawArgs = invocation.args();
   return {
     method: invocation.functionName().toString(),

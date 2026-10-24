@@ -8,7 +8,6 @@ description = "Event indexer for the keeper-registry contract (epic E14, docs/IN
 
 [dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-postgres = "0.7"
 thiserror = "2"
 anyhow = "1.0"
 axum = { version = "0.8", features = ["ws"] }
@@ -39,5 +38,6 @@ utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["process"] }
 tokio-tungstenite = "0.24"
 tower = { version = "0.5", features = ["util"] }
