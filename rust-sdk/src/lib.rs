@@ -23,6 +23,11 @@
 //! assert_eq!(retry.max_attempts, 1);
 //! ```
 
+use core::ops::RangeInclusive;
+
+/// Contract `VERSION` values this SDK was built and tested against.
+pub const SUPPORTED_CONTRACT_VERSIONS: RangeInclusive<u32> = 1..=6;
+
 pub mod client;
 pub mod cross_contract;
 pub mod error;
