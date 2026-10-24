@@ -2,6 +2,13 @@
 //! refund paths (owner cancel and permissionless expiry).
 //!
 //! `register_task`'s arity (owner, task_type, calldata, reward, deadline,
+//! ttl_ledgers, lock_ledgers, verifier, condition) is inherent to the ABI:
+//! every field is a distinct scalar a caller must supply, and a params struct
+//! would just move them without improving anything. The allow below is
+//! module-level, not on the function itself, because `#[contractimpl]`
+//! generates its spec entry and client method as sibling items in this module,
+//! not nested inside the `impl` block, so a function- or impl-level attribute
+//! does not cover them.
 //! ttl_ledgers, lock_ledgers, verifier, condition) is inherent to the ABI: every field is
 //! a distinct scalar a caller must supply, and a params struct would just move
 //! them without improving anything. The allow below is module-level, not on
@@ -47,6 +54,11 @@ impl KeeperRegistry {
     //                  this function's own behavior — only `execute_task`
     //                  consumes it. Any address is accepted (verifiers are
     //                  permissionless).
+    //   condition    — optional on-chain conditional executor. `None` behaves
+    //                  exactly as before this parameter existed; `Some(addr)` is
+    //                  stored on the task but does not change this function's own
+    //                  behavior — only `execute_task` consumes it. Any address is
+    //                  accepted (conditions are permissionless).
     //   condition    — optional pre-claim predicate implementing
     //                  `ITaskCondition::is_met(task_id)`. `None` preserves the
     //                  original path; false or failed evaluation leaves the
@@ -99,6 +111,7 @@ impl KeeperRegistry {
             claim_ledger: None,
             lock_ledgers,
             verifier,
+            condition,
             condition: condition.clone(),
         };
         save_task(&e, task_id, &task);
