@@ -54,16 +54,6 @@ network where that is not known exactly, any ledger at or before the
 `initialize` call works: ingestion is idempotent, so starting early costs
 extra scanning rather than correctness.
 
-## Shutdown
-
-On SIGINT (ctrl-c) or SIGTERM (what a container orchestrator sends on a
-normal stop or restart), the indexer stops starting new ingestion passes
-and, if one is already in flight, lets it finish and checkpoint before
-exiting — bounded by `INDEXER_SHUTDOWN_DRAIN_SECS`, so a stuck pass cannot
-block shutdown indefinitely. If that bound is hit, the process exits anyway;
-the next start resumes cleanly from the last checkpoint, since ingestion is
-idempotent.
-
 ## Running
 
 ```bash
@@ -75,28 +65,79 @@ export INDEXER_START_LEDGER=1000
 cargo run -p keeper-indexer
 ```
 
+That one process does everything: it backfills from the checkpoint (or
+`INDEXER_START_LEDGER` on a fresh database), keeps polling once caught up, and
+serves the API on `INDEXER_BIND_ADDRESS`:
+
+- REST under `/v1` (`/v1/health`, `/v1/tasks/{id}`, `/v1/events`, ...), described
+  by `openapi.yaml`.
+- A live WebSocket feed at `/v1/stream`.
+
+### Startup, in order
+
+1. Configuration is validated. Every problem is reported at once, and the
+   process exits with status `2`.
+2. The RPC endpoint is health-checked, so a wrong `INDEXER_RPC_URL` stops the
+   boot instead of failing the first poll.
+3. The SQLite database is opened and migrations are applied.
+4. The API address is bound. A port that is already taken fails here, before
+   anything is ingested.
+5. Ingestion and the HTTP server start together.
+
+### Shutdown and failures
+
+Ingestion and the HTTP server are supervised as one unit (`src/service.rs`).
+
+- **SIGINT (ctrl-c) or SIGTERM** (what a container orchestrator sends on a
+  normal stop or restart) starts a graceful shutdown. Ingestion stops starting
+  new passes and lets the one in flight finish and checkpoint. The HTTP server
+  stops accepting connections and lets in-flight requests finish. The process
+  exits `0`. Both are bounded by `INDEXER_SHUTDOWN_DRAIN_SECS` (default 30), so
+  a stuck pass or an open WebSocket subscription cannot block shutdown
+  indefinitely. If the bound is hit, the process exits anyway and the next
+  start resumes from the last checkpoint, since ingestion is idempotent.
+- **If either half fails**, the other is stopped and the process exits
+  non-zero with the error in the log. That covers an RPC error, a ledger the
+  source later reports differently (see `src/reorg.rs`), and the HTTP server
+  dying. A process manager (systemd, Kubernetes) should restart it, and it
+  resumes from the checkpoint. It never keeps serving a database that nothing is
+  feeding.
+
+## Storage
+
+SQLite, through `sqlx`, is the only storage path. The schema is the
+migrations in `indexer/migrations/`, applied automatically on start. There is no
+PostgreSQL support; an earlier `tokio-postgres` schema and ingest path was
+removed so there is only one schema to build against.
+
 ## Tests
 
 ```bash
 cargo test -p keeper-indexer
 ```
 
-Tests run against an in-memory SQLite database and a fixture event source, so
-no RPC endpoint or external database is needed.
+Tests run against in-memory SQLite and a fixture event source, so no RPC
+endpoint or external database is needed. `tests/service_process.rs` goes
+further: it starts the real `keeper-indexer` binary against a mock Soroban RPC,
+checks ingested events through the REST and WebSocket routes, checks that
+SIGTERM shuts it down cleanly, and checks that an ingestion failure takes the
+whole process down.
 
 ## Event coverage
 
-All fifteen events the contract emits are ingested with their exact payload
+All sixteen parseable registry events are ingested with their exact payload
 fields, in the order `contracts/keeper-registry/src/events.rs` publishes them:
 
-`TaskRegistered`, `TaskClaimed`, `TaskExecuted`, `TaskExpired`,
+`TaskRegistered`, `ConditionNotMet`, `TaskClaimed`, `TaskExecuted`, `TaskExpired`,
 `TaskCancelled`, `RewardIncreased`, `DeadlineExtended`, `RewardsWithdrawn`,
 `Paused`, `FeeUpdated`, `AdminTransferred`, `MinRewardUpdated`, `FeesSwept`,
 `Initialized`, `Upgraded`.
 
 Fields the events do not carry are not reconstructed. `TaskClaimed` has no
 reward, so a consumer needing the claim and the reward together joins against
-the task's `TaskRegistered` event rather than reading an invented value.
+the task's `TaskRegistered` event rather than reading an invented value. The
+registration payload's optional `condition` is `null` for historical four-field
+events, and each `ConditionNotMet` carries exactly `(task_id, condition)`.
 
 ## Caching
 

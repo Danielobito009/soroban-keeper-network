@@ -6,6 +6,11 @@ name: PR Hygiene
 # Every job here is advisory. Nothing in this workflow blocks a merge; the
 # output is guidance for the contributor and a summary for the reviewer.
 # Hard gates live in ci.yml.
+#
+# `actionlint` is the one job that can show red: it is not part of
+# `ci-required`, so it still never blocks a merge, but a finding is a real
+# mistake in a workflow file, not a style opinion, so it should not be hidden
+# behind continue-on-error.
 
 on:
   pull_request:
@@ -178,3 +183,56 @@ jobs:
           if [ "$findings" -gt 0 ]; then
             echo "::warning::Diff guard flagged $findings item(s) — see the job summary."
           fi
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Lint the workflow files themselves. ci.yml is big and many people edit it,
+  # and an expression typo or a bad `needs:` only shows up when the job runs.
+  # actionlint catches those on the PR. It also runs shellcheck over every
+  # `run:` block (shellcheck is preinstalled on ubuntu-latest).
+  #
+  # Only runs when the PR touches .github/workflows/ or the actionlint config.
+  # ───────────────────────────────────────────────────────────────────────────
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check for relevant changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if git diff --name-only "$BASE_SHA" "$HEAD_SHA" | grep -qE '^\.github/(workflows/|actionlint\.ya?ml$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install actionlint
+        if: steps.changes.outputs.relevant == 'true'
+        # Pinned: a new actionlint release adds checks, and we want those to
+        # arrive as a deliberate version bump, not as a surprise on someone
+        # else's PR.
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+
+      - name: Run actionlint
+        if: steps.changes.outputs.relevant == 'true'
+        run: ./actionlint -color
+
+      - name: How to run this locally
+        if: failure()
+        run: |
+          echo "::error::actionlint found problems in .github/workflows/. Run 'actionlint' locally (https://github.com/rhysd/actionlint) to reproduce."
+
+      - name: Skip notice
+        if: steps.changes.outputs.relevant == 'false'
+        run: |
+          {
+            echo "### actionlint"
+            echo
+            echo "Skipped — no changes under \`.github/workflows/\`."
+          } >> "$GITHUB_STEP_SUMMARY"

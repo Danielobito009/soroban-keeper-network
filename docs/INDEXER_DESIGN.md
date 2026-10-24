@@ -51,7 +51,18 @@ starting point (§4).
 
 ## 2. Storage
 
-**PostgreSQL, accessed from a Rust service (`indexer/`, a new workspace
+> **Update (issue #582): what shipped is SQLite.** The service stores events
+> in SQLite through `sqlx`, using the migrations in `indexer/migrations/`, and
+> that is the only storage path in the crate. The PostgreSQL design below was
+> the original plan; a `tokio-postgres` implementation of it existed briefly
+> alongside and was removed so that no second, incompatible schema could be
+> built against. The reasoning for a relational store with a database-enforced
+> unique key still holds (SQLite provides both). The case against SQLite below
+> assumed a separate API process; the API and the ingest loop now run in one
+> process, which is the case SQLite handles well. Moving to a server database
+> later is a change to `store.rs` and the migrations, not to the API types.
+
+**Original decision: PostgreSQL, accessed from a Rust service (`indexer/`, a new workspace
 member) via `sqlx`.**
 
 Rust because the repository is a Rust workspace with a stable-toolchain CI
@@ -236,7 +247,7 @@ one.
 | Question | Decision |
 | --- | --- |
 | Ingest | Poll `getEvents`; persisted cursor, full pagination, retention-window detection |
-| Storage | PostgreSQL via `sqlx` from a Rust workspace member (`indexer/`) |
+| Storage | SQLite via `sqlx` from a Rust workspace member (`indexer/`); see the §2 update |
 | Reorgs | Not a real risk under SCP finality; RPC misbehaviour is absorbed by keyed, replayable ingestion |
 | Backfill | Same loop from `INDEXER_START_LEDGER`; archival RPC is configuration, not a code path |
 | API | Read-only REST per the consumer table; WebSocket later, schema-compatible |

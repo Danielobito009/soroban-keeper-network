@@ -6,6 +6,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — optional on-chain condition parameter (VERSION bumped to 6)
+
+- `register_task` now takes a required tenth parameter, `condition: Option<Address>`.
+  `None` behaves exactly as before this change; `Some(addr)` attaches an
+  optional conditional executor that `execute_task` may consult before execution.
+  Any address is permitted — conditions are permissionless, like keepers.
+- `BatchTaskParams` now includes `verifier: Option<Address>` and
+  `condition: Option<Address>` fields (previously, batch registration always
+  attached `None` for verifier and has no condition support yet; this slice
+  enables both).
+- `KeeperRegistryCrossContract::register_task` builder in `rust-sdk` updated
+  with `verifier` and `condition` parameters.
+- **This is a breaking ABI change** — every existing `register_task` call site
+  must add the new `condition` argument. Batch registration parameters also
+  now include two new fields.
+- `VERSION` bumped from 5 to 6.
+### Added — task conditions (E10, VERSION bumped to 6)
+
+- `register_task` and each `batch_register_tasks` entry now accept an optional
+  `condition: Option<Address>` parameter. The persisted `Task` record exposes
+  the same field and defaults it to `None` for unconditional tasks.
+- `claim_task` evaluates `ITaskCondition::is_met(task_id)` before writing claim
+  state. A false or failed check rejects with `ConditionNotMet`, leaves the
+  task pending, and emits the versioned `ConditionNotMet` event containing the
+  task ID and condition address.
+- `TaskRegistered` now includes the optional condition address. Contract
+  `VERSION` is 6 because the registration ABI, stored task schema, and event
+  payload changed.
+- Tasks may carry an optional condition contract implementing
+  `ITaskCondition::is_met(task_id) -> bool`. `claim_task` evaluates it before
+  writing claim state; `false`, a missing contract, or a failed invocation
+  rejects with `ConditionNotMet` and leaves the task pending.
+- `batch_register_tasks` accepts a condition on every entry and uses the same
+  validation helper as `register_task`. Mixed conditioned and unconditional
+  batches are covered by contract tests.
+- `TaskRegistered` now includes the optional condition address and rejected
+  checks emit `ConditionNotMet` with `(task_id, condition)`. The indexer stores
+  both, returns the condition from `GET /tasks/{task_id}`, and counts condition
+  rejections. Historical four-field registration events decode with a null
+  condition.
+- Contract `VERSION` is now 6 because the task struct, registration argument,
+  and registration event payload changed. See
+  `docs/TASK_CONDITIONS_DESIGN.md` and
+  `docs/TASK_CONDITIONS_SECURITY_REVIEW.md` for the interface, trust boundary,
+  security review, and E10 retrospective.
+
 ### Added — rust-sdk call context on every error (0345)
 
 - Every error `KeeperClient` and `KeeperRegistryClient` return now carries

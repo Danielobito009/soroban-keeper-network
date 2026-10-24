@@ -1,5 +1,22 @@
 # Batch Registration Helper
 
+> **CLI available:** This script has been ported into the `skn` CLI as
+> [`skn batch register`](../../packages/cli/src/commands/batch/register.ts),
+> where it shares named network profiles, signing-key sources (`--key-file`,
+> `--identity`, `SKN_SECRET_KEY`), and `--json` output with the rest of the
+> toolkit:
+>
+> ```bash
+> # Validate and preview without signing or submitting:
+> skn batch register examples/batch-register/tasks.example.json --dry-run
+>
+> # Submit against the active profile or --contract-id:
+> skn batch register examples/batch-register/tasks.example.json --contract-id <C...>
+> ```
+>
+> Both `skn batch register` and the standalone `index.js` in this folder accept
+> the exact same JSON and CSV task-list formats documented below.
+
 Owner-side tooling for dApp integrators: takes a list of tasks you want
 automated and registers them all in a single `batch_register_tasks` call.
 

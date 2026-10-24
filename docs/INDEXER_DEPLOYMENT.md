@@ -11,9 +11,9 @@ for the design, and this guide does not restate it.
 
 > **Note:** ingest, storage, reorg, backfill, and API-shape decisions from
 > issue #346 still land in `INDEXER_DESIGN.md` as that issue closes. Until
-> they do, the schema's own commented SQL in `indexer/src/schema/` is the
-> reference for tables and columns. The instance model and event-versioning
-> policy are already recorded there.
+> they do, the SQL in `indexer/migrations/` is the reference for tables and
+> columns. The instance model and event-versioning policy are already recorded
+> there.
 
 ## One instance per deployment
 
@@ -40,9 +40,9 @@ change instead means starting a new instance.
 
 ## Prerequisites
 
-- **PostgreSQL 14 or newer.** The schema uses `NUMERIC(39, 0)` for the
-  contract's `i128` amounts and `CREATE OR REPLACE VIEW`; nothing newer than
-  14 is required.
+- **Somewhere to keep a SQLite file.** The indexer uses SQLite and nothing
+  else; there is no database server to install. Put the file on a persistent
+  volume, because it holds the checkpoint as well as the events.
 - **A Rust toolchain**, to build the indexer binary (`cargo build --release
   --package keeper-indexer`).
 - **An RPC endpoint** for the network the registry is deployed on, with
@@ -50,27 +50,23 @@ change instead means starting a new instance.
   [Initial backfill](#3-initial-backfill)).
 - **The deployed registry contract ID** (`C...`) you want to index.
 
-## 1. Provision the database
+## 1. Provision storage
 
-The indexer wants its own database and its own role. Give the role ownership
-of its schema — the indexer creates its own tables on start — but no rights
-over anything else on the instance.
+There is nothing to create: the indexer makes the database file on first start
+if it does not exist. Pick a directory the service user can write to and keep
+it out of any path that is wiped on deploy.
 
 ```bash
-createdb keeper_indexer
-psql keeper_indexer -c "CREATE ROLE indexer LOGIN PASSWORD 'CHANGE_ME';"
-psql keeper_indexer -c "GRANT ALL ON DATABASE keeper_indexer TO indexer;"
-psql keeper_indexer -c "GRANT ALL ON SCHEMA public TO indexer;"
+install -d -o indexer -g indexer -m 0750 /var/lib/keeper-indexer
 ```
+
+The file is then `sqlite:///var/lib/keeper-indexer/indexer.db` (note the three
+slashes for an absolute path).
 
 Sizing is driven by task events, not by the admin trail: admin and governance
 events are low-volume by nature, while claims and executions grow with network
 activity. Plan capacity against your expected task throughput, and note that
 every event is retained — the indexer never deletes history to reclaim space.
-
-The schema is applied by the indexer itself on start, and every statement is
-`IF NOT EXISTS` / `OR REPLACE`, so starting against an existing database is
-safe and is the normal case after the first run.
 
 ## 2. Configuration
 
@@ -78,35 +74,46 @@ The indexer is configured through the environment:
 
 | Variable | Required | Meaning |
 |----------|----------|---------|
-| `DATABASE_URL` | Yes | `postgresql://indexer:PASSWORD@host:5432/keeper_indexer` |
-| `RPC_URL` | Yes | The Soroban RPC endpoint to read events from. |
-| `REGISTRY_CONTRACT_ID` | Yes | The single `C...` contract whose events are indexed. One id, not a list; a second contract is a second instance. |
-| `START_LEDGER` | No | First ledger to backfill from. Defaults to the contract's deployment ledger. |
+| `INDEXER_DATABASE_URL` | Yes | `sqlite:///var/lib/keeper-indexer/indexer.db` |
+| `INDEXER_RPC_URL` | Yes | The Soroban RPC endpoint to read events from. |
+| `INDEXER_CONTRACT_ID` | Yes | The single `C...` contract whose events are indexed. One id, not a list; a second contract is a second instance. |
+| `INDEXER_START_LEDGER` | Yes | First ledger to backfill from on a fresh database. Use the contract's deployment ledger. |
+| `INDEXER_BIND_ADDRESS` | No | Where the API listens. Default `127.0.0.1:8080`. |
 
-Keep `DATABASE_URL` out of shell history and out of the process table — it
-carries the password. A systemd unit's `EnvironmentFile=` with mode `0600`, or
-your platform's secret store, is the usual way.
+Everything else (poll interval, page size, cache TTL, rate limits, log filter)
+is optional and listed in [`indexer/README.md`](../indexer/README.md).
+
+Keep the database path out of the process table if it reveals anything
+sensitive. A systemd unit's `EnvironmentFile=` with mode `0600`, or your
+platform's secret store, is the usual way.
 
 ## 3. Initial backfill
 
-On an empty database the indexer replays history from `START_LEDGER` forward
-before it begins following the chain head. This is the longest part of a
-deployment and the part most likely to need a second attempt, so run it
-attached the first time rather than as a service:
+On an empty database the indexer replays history from `INDEXER_START_LEDGER`
+forward before it settles into following the chain head. This is the longest
+part of a deployment and the part most likely to need a second attempt, so
+watch the first run:
 
 ```bash
-DATABASE_URL=... RPC_URL=... REGISTRY_CONTRACT_ID=C... \
-  ./target/release/keeper-indexer --backfill
+INDEXER_DATABASE_URL=sqlite://indexer.db \
+INDEXER_RPC_URL=... INDEXER_CONTRACT_ID=C... INDEXER_START_LEDGER=... \
+  ./target/release/keeper-indexer
 ```
 
-The backfill is **resumable and safe to re-run**. Every row is keyed on the
-`(ledger, tx_index, event_index)` cursor the event was observed at, and every
-insert is `ON CONFLICT DO NOTHING`, so re-ingesting a range that was already
-processed is a no-op rather than a duplicate. If it dies partway, start it
-again — it does not need the database reset first.
+There is no separate backfill mode. The same process backfills, then keeps
+polling, and serves the API the whole time. `GET /v1/health` reports
+`last_ingested_ledger` and `backfill_complete`, so you can tell when it has
+caught up.
 
-Once it reaches the chain head, start it as a long-running service to follow
-live ledgers.
+The backfill is **resumable and safe to re-run**. Progress is checkpointed
+after every page. Every event is keyed on `(tx_hash, event_index)` and inserts
+are idempotent, so re-ingesting a range that was already processed is a no-op
+rather than a duplicate. If it dies partway, start it again — it resumes from
+the checkpoint and does not need the database reset first.
+
+Stop it with SIGINT or SIGTERM. It finishes and checkpoints the page it is on,
+then exits `0`. Any other exit is a failure and the reason is in the log; run
+the service under a supervisor that restarts it.
 
 ## 4. Steady-state operation
 
@@ -116,21 +123,14 @@ A healthy instance looks like this:
   ledger the indexer has ingested and the current chain head. It should sit at
   a few ledgers and stay there. A number that grows monotonically is the
   signal that matters — see the troubleshooting section.
-- **Derived balances agree with the contract.** For any keeper address, the
-  `available_balance` column of the `keeper_balances` view must equal the
-  contract's own `keeper_balance` view whenever the indexer is caught up. This
-  is the single best end-to-end correctness check, because it exercises
-  ingestion, the schema, and the derived arithmetic at once:
-
-  ```bash
-  psql "$DATABASE_URL" -c \
-    "SELECT available_balance FROM keeper_balances WHERE keeper = 'G...';"
-  stellar contract invoke --id "$REGISTRY_CONTRACT_ID" -- keeper_balance --keeper G...
-  ```
-
-  A disagreement means the indexer is behind or has missed events; it does not
-  mean the contract is wrong.
-- **The admin trail is append-only.** Row counts in `admin_events` only ever
+- **`/v1/health` reports `backfill_complete: true`** and a
+  `last_ingested_ledger` that keeps advancing. Compare it with the chain head
+  from your RPC endpoint (`getLatestLedger`).
+- **Derived state agrees with the contract.** For a task, the status from
+  `GET /v1/tasks/{id}` must match the contract's own `get_task` view whenever
+  the indexer is caught up. A disagreement means the indexer is behind or has
+  missed events; it does not mean the contract is wrong.
+- **The admin trail is append-only.** Row counts in the `events` table only ever
   increase. A count that drops means something outside the indexer wrote to
   the database.
 
@@ -163,10 +163,10 @@ consuming ledgers slower than the network produces them.
 
 In order of likelihood:
 
-1. **The database is the bottleneck.** Check for lock contention and slow
-   inserts (`pg_stat_activity`). An under-provisioned instance, or one where
-   the indexer competes with heavy analytical queries against the same
-   tables, will show up here first.
+1. **The database is the bottleneck.** SQLite allows one writer at a time, so
+   slow storage (a network filesystem in particular) or another process
+   opening the same file will show up here first. Keep the file on local disk
+   and let only the indexer write to it.
 2. **The RPC endpoint is rate-limiting or slow.** A shared public endpoint
    under load will throttle. Move to a dedicated endpoint.
 3. **A restart loop.** If the process is crashing and restarting, lag grows
@@ -176,21 +176,24 @@ In order of likelihood:
 Lag that is large but *flat* after a restart or an outage is not this problem
 — that is the indexer catching up, and it will close on its own.
 
-### Database connection failures
+### The database cannot be opened
 
-The indexer cannot connect, or drops its connection during operation.
+The process exits at startup with `opening the event store`.
 
-Verify the parts of `DATABASE_URL` independently — connect with `psql` using
-the same URL. That separates a credentials or permissions problem from a
-network one. If `psql` works and the indexer does not, the URL the process
-actually received is not the one you think it is; check the environment file
-is being read and has the right ownership.
+Check the path in `INDEXER_DATABASE_URL`: the directory must exist and be
+writable by the user the service runs as (the indexer creates the file, not
+the directory), and an absolute path needs three slashes
+(`sqlite:///var/...`). If the file is on a network filesystem, move it to local
+disk; SQLite's locking is unreliable there.
 
-For connections that succeed and then drop, look at the instance's connection
-limit and at any idle-connection timeout between the indexer and the database
-(a load balancer or connection pooler in between is the usual culprit). The
-indexer reconnects on its own; persistent drops mean the limit or the timeout
-needs raising, not a code change.
+An error while the service is running does not corrupt what is already stored —
+the indexer resumes from the last committed checkpoint.
 
-A connection failure never corrupts what is already stored — the indexer
-resumes from the last committed cursor.
+### The process exited
+
+An exit with a non-zero status always means ingestion or the API server
+failed; the log line names which. The process does not keep half of itself
+running. The usual causes are an unreachable or erroring RPC endpoint, and a
+ledger the RPC later reports differently from what was stored (see
+`indexer/src/reorg.rs`), which needs a person to look at it rather than a
+blind restart.

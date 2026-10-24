@@ -1,8 +1,7 @@
 //! A seeded API server for the load test (issue 0242).
 //!
-//! `indexer/loadtest/run.mjs` needs something to point at, and the service
-//! loop that will serve the API in production has not landed yet. Rather than
-//! having the load test measure a stub — which would measure the stub — this
+//! `indexer/loadtest/run.mjs` needs something to point at. A load test should
+//! not measure a stub, and it should not wait on a live RPC either, so this
 //! boots the **real** router over the **real** store, seeded with a realistic
 //! event history, and holds it open.
 //!
